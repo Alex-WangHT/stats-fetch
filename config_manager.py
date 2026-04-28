@@ -5,7 +5,6 @@
 """
 
 import json
-import os
 import sys
 
 PROVINCE_PRESETS = {
@@ -84,19 +83,6 @@ PROVINCE_PRESETS = {
 
 def generate_default_config(config_path="config.json"):
     config = {
-        "_使用说明": {
-            "1_province_preset": "可选: 长江经济带 / 沿海经济带 / 京津冀 / 长三角 / 全部省份",
-            "2_custom_provinces": "如需自定义省份，填在 custom_provinces 里，会覆盖预设",
-            "3_time_range": "格式: 起始年YY-结束年YY，如 1995YY-2025YY",
-            "4_delay": "每次请求间隔秒数，建议2-3秒",
-            "5_如何获取指标参数": [
-                "打开 data.stats.gov.cn/dg/website/page.html#/pc/national/fsYearData",
-                "F12 → Network → Fetch/XHR",
-                "点击左侧指标，等表格加载",
-                "找到 getEsDataByCidAndDt 请求",
-                "从 Payload 中复制 cid, rootId, indicatorIds",
-            ],
-        },
         "province_preset": "长江经济带",
         "custom_provinces": {},
         "time_range": "1995YY-2025YY",
