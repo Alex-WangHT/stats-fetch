@@ -943,7 +943,7 @@ def prescreen_all_directories(dt_format):
 
 def generate_config_interactively(config_path="config.json"):
     """
-    交互式生成配置文件（优化版）
+    交互式生成配置文件（简化版）
     
     新流程：
     [后台预筛选阶段]
@@ -954,25 +954,26 @@ def generate_config_interactively(config_path="config.json"):
        - 显示整体进度
     
     [交互选择阶段]
-    2. 步骤 1/6: 选择一级目录（从预筛选结果中）
-    3. 步骤 2/6: 选择二级目录（从预筛选结果中）
-    4. 步骤 3/6: 选择指标（从预筛选结果中）
-    5. 步骤 4/6: 选择省份
-    6. 步骤 5/6: 配置其他选项
-    7. 步骤 6/6: 生成配置文件
+    2. 步骤 1/5: 选择一级目录（从预筛选结果中）
+    3. 步骤 2/5: 选择二级目录（从预筛选结果中，可多选）
+    4. 步骤 3/5: 自动选择所有指标（无需手动选择）
+    5. 步骤 4/5: 选择省份
+    6. 步骤 5/5: 配置其他选项
+    7. 生成配置文件
     
-    优化说明：
+    简化说明：
     - 预筛选在交互之前完成，用户无需在交互时等待
     - 预筛选显示进度百分比，让用户知道剩余时间
-    - 交互时直接从预筛选结果中选择，快速流畅
+    - 只需要选择一级和二级目录，指标自动全部选择
+    - 流程更简洁，操作更快速
     """
     print(f"\n{'='*60}")
-    print(f"  国家统计局数据爬虫 - 交互式配置生成器 v4.1")
+    print(f"  国家统计局数据爬虫 - 交互式配置生成器 v4.2")
     print(f"{'='*60}")
     print(f"  [增强] 已启用人类行为模拟")
     print(f"  [增强] 遵守 robots.txt 协议")
-    print(f"  [优化] 先预筛选，后交互选择")
-    print(f"  [优化] 预筛选延迟: {PRESCREEN_DELAY} 秒（更快）")
+    print(f"  [简化] 只需要选择一级和二级目录")
+    print(f"  [简化] 指标自动全部选择，无需手动选择")
     print(f"{'='*60}")
     
     client = get_api_client(delay=PRESCREEN_DELAY)
@@ -1062,90 +1063,45 @@ def generate_config_interactively(config_path="config.json"):
         indicators_config = {}
         
         print(f"\n{'='*60}")
-        print(f"  步骤 3/6: 为每个二级目录选择指标")
+        print(f"  步骤 3/5: 自动选择所有指标")
         print(f"{'='*60}")
+        print("  提示: 已自动选择所选二级目录下的所有指标")
         
         for cid_item in selected_cids:
             cid_name = cid_item["name"]
             cid = cid_item["cid"]
             has_fids = cid_item["has_fids"]
             
-            print(f"\n{'-'*60}")
-            print(f"  处理二级目录: {cid_name}")
-            print(f"{'-'*60}")
+            print(f"\n  处理二级目录: {cid_name}")
             
             if has_fids:
                 valid_fids = cid_item["valid_fids"]
-                print(f"\n  发现 {len(valid_fids)} 个有指标的三级目录")
+                print(f"    发现 {len(valid_fids)} 个三级目录，自动选择所有指标...")
                 
-                fid_options = [{"name": item["name"], "fid": item["fid"]} for item in valid_fids]
-                
-                selected_fid_items = select_multiple_from_list(
-                    fid_options, 
-                    display_key="name", 
-                    title=f"请为 [{cid_name}] 选择三级目录（可多选）"
-                )
-                if not selected_fid_items:
-                    print(f"  跳过 [{cid_name}]")
-                    continue
-                
-                print(f"\n  已选择 {len(selected_fid_items)} 个三级目录")
-                
-                for selected_fid_item in selected_fid_items:
-                    fid_name = selected_fid_item["name"]
-                    fid = selected_fid_item["fid"]
+                for valid_fid in valid_fids:
+                    fid_name = valid_fid["name"]
+                    fid = valid_fid["fid"]
+                    indicator_ids = valid_fid["indicators"]
                     
-                    indicator_ids = None
-                    for valid_fid in valid_fids:
-                        if valid_fid["fid"] == fid:
-                            indicator_ids = valid_fid["indicators"]
-                            break
-                    
-                    if not indicator_ids:
-                        print(f"  [警告] 未获取到 [{fid_name}] 的指标列表")
-                        continue
-                    
-                    selected_indicators = select_multiple_from_list(
-                        indicator_ids, 
-                        display_key="name", 
-                        title=f"请为 [{fid_name}] 选择指标（可多选）"
-                    )
-                    
-                    if not selected_indicators:
-                        print(f"  跳过 [{fid_name}]")
-                        continue
-                    
-                    indicator_name = f"{cid_name} - {fid_name}"
-                    indicator_id_list = [item["indicatorId"] for item in selected_indicators]
-                    
-                    print(f"\n  已选择 {len(indicator_id_list)} 个指标")
-                    
-                    indicators_config[indicator_name] = {
-                        "cid": cid,
-                        "indicatorIds": indicator_id_list,
-                        "rootId": root_id,
-                        "fid": fid
-                    }
+                    if indicator_ids:
+                        indicator_name = f"{cid_name} - {fid_name}"
+                        indicator_id_list = [item["indicatorId"] for item in indicator_ids]
+                        
+                        print(f"    ✓ [{fid_name}]: {len(indicator_id_list)} 个指标")
+                        
+                        indicators_config[indicator_name] = {
+                            "cid": cid,
+                            "indicatorIds": indicator_id_list,
+                            "rootId": root_id,
+                            "fid": fid
+                        }
             else:
                 indicator_ids = cid_item["indicators"]
-                print(f"\n  该目录有 {len(indicator_ids)} 个指标")
+                indicator_id_list = [item["indicatorId"] for item in indicator_ids]
                 
-                selected_indicators = select_multiple_from_list(
-                    indicator_ids, 
-                    display_key="name", 
-                    title=f"请为 [{cid_name}] 选择指标（可多选）"
-                )
+                print(f"    ✓ 自动选择 {len(indicator_id_list)} 个指标")
                 
-                if not selected_indicators:
-                    print(f"  跳过 [{cid_name}]")
-                    continue
-                
-                indicator_name = cid_name
-                indicator_id_list = [item["indicatorId"] for item in selected_indicators]
-                
-                print(f"\n  已选择 {len(indicator_id_list)} 个指标")
-                
-                indicators_config[indicator_name] = {
+                indicators_config[cid_name] = {
                     "cid": cid,
                     "indicatorIds": indicator_id_list,
                     "rootId": root_id
@@ -1155,8 +1111,11 @@ def generate_config_interactively(config_path="config.json"):
             print("[错误] 未选择任何指标，无法生成配置文件")
             return False, None
         
+        total_indicators = sum(len(v["indicatorIds"]) for v in indicators_config.values())
+        print(f"\n  共选择 {len(indicators_config)} 个指标组，{total_indicators} 个具体指标")
+        
         print(f"\n{'='*60}")
-        print(f"  步骤 4/6: 选择省份")
+        print(f"  步骤 4/5: 选择省份")
         print(f"{'='*60}")
         print("  [1] 使用预设省份组")
         print("  [2] 自定义选择省份")
@@ -1193,7 +1152,7 @@ def generate_config_interactively(config_path="config.json"):
                 print("请输入 1, 2 或 0")
         
         print(f"\n{'='*60}")
-        print(f"  步骤 5/6: 配置其他选项")
+        print(f"  步骤 5/5: 配置其他选项")
         print(f"{'='*60}")
         
         delay_input = input("\n请求间隔（秒，默认2，用于正式数据抓取）: ").strip()
@@ -1207,7 +1166,7 @@ def generate_config_interactively(config_path="config.json"):
             output += ".xlsx"
         
         print(f"\n{'='*60}")
-        print(f"  步骤 6/6: 生成配置文件")
+        print(f"  生成配置文件")
         print(f"{'='*60}")
         
         config = {
