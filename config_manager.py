@@ -117,22 +117,47 @@ PROVINCE_PRESETS = {
 }
 
 
+PRESCREEN_DELAY = 0.8
+PRESCREEN_MIN_DELAY = 0.5
+PRESCREEN_MAX_DELAY = 5.0
+PRESCREEN_DELAY_STEP = 0.5
+
+
 class ConfigApiClient:
     """
     配置生成阶段的 API 客户端
     包含人类行为模拟：随机延迟、User-Agent 轮换、Session 复用
     遵守 robots.txt 协议
+    支持弹性延迟调整（请求失败时自动增加延迟）
     """
 
     def __init__(self, delay=DEFAULT_DELAY, human_like=DEFAULT_HUMAN_LIKE):
         self.delay = delay
+        self.base_delay = delay
         self.human_like = human_like
         self.session = requests.Session()
         self._last_request_time = 0
         self._robots_txt_checked = False
         self._robots_allowed = True
+        self._consecutive_failures = 0
         
         self._init_session()
+    
+    def _adjust_delay_on_success(self):
+        """请求成功时，尝试降低延迟（不低于 base_delay）"""
+        if self._consecutive_failures > 0:
+            self._consecutive_failures = 0
+            if self.delay > self.base_delay:
+                self.delay = max(self.base_delay, self.delay - PRESCREEN_DELAY_STEP)
+    
+    def _adjust_delay_on_failure(self):
+        """请求失败时，增加延迟"""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= 2:
+            new_delay = min(PRESCREEN_MAX_DELAY, self.delay + PRESCREEN_DELAY_STEP)
+            if new_delay > self.delay:
+                self.delay = new_delay
+                print(f"  [提示] 连续请求失败，已将延迟调整为 {self.delay} 秒")
 
     def _init_session(self):
         """初始化会话，模拟人类浏览器环境"""
@@ -240,18 +265,23 @@ class ConfigApiClient:
             result = r.json()
             
             if not result.get("success") or result.get("state") != 20000:
+                self._adjust_delay_on_failure()
                 print(f"[警告] API返回错误: {result.get('message', '未知错误')}")
                 return []
             
+            self._adjust_delay_on_success()
             return result.get("data", [])
         
         except requests.exceptions.Timeout:
+            self._adjust_delay_on_failure()
             print("[错误] 请求超时")
             return []
         except requests.exceptions.ConnectionError:
+            self._adjust_delay_on_failure()
             print("[错误] 连接失败")
             return []
         except Exception as e:
+            self._adjust_delay_on_failure()
             print(f"[错误] {str(e)}")
             return []
 
@@ -290,9 +320,11 @@ class ConfigApiClient:
             result = r.json()
             
             if not result.get("success") or result.get("state") != 20000:
+                self._adjust_delay_on_failure()
                 print(f"[警告] API返回错误: {result.get('message', '未知错误')}")
                 return []
             
+            self._adjust_delay_on_success()
             data = result.get("data", {})
             item_list = data.get("list", [])
             
@@ -306,12 +338,15 @@ class ConfigApiClient:
             return indicator_ids
         
         except requests.exceptions.Timeout:
+            self._adjust_delay_on_failure()
             print("[错误] 请求超时")
             return []
         except requests.exceptions.ConnectionError:
+            self._adjust_delay_on_failure()
             print("[错误] 连接失败")
             return []
         except Exception as e:
+            self._adjust_delay_on_failure()
             print(f"[错误] {str(e)}")
             return []
 
@@ -767,21 +802,167 @@ def filter_cids_with_indicators(cids, dt_format):
     return valid_cids
 
 
+def filter_cids_with_indicators_with_progress(cids, dt_format, root_name=""):
+    """
+    筛选有指标的二级目录（带进度显示）
+    
+    参数:
+        cids: 二级目录列表
+        dt_format: 年份范围格式
+        root_name: 一级目录名称（用于进度显示）
+    
+    返回:
+        list: 有指标的二级目录列表，每个元素包含额外信息
+    """
+    valid_cids = []
+    total = len(cids)
+    
+    for idx, cid_item in enumerate(cids):
+        cid_name = cid_item["name"]
+        cid = cid_item["cid"]
+        
+        progress = (idx + 1) / total * 100
+        if root_name:
+            print(f"  [{root_name}] 进度: {progress:.1f}% | 检查 [{cid_name}] ...", end="", flush=True)
+        else:
+            print(f"  进度: {progress:.1f}% | 检查 [{cid_name}] ...", end="", flush=True)
+        
+        fids = get_fids(cid)
+        
+        if fids:
+            valid_fids = []
+            for fid_item in fids:
+                fid_name = fid_item["name"]
+                fid = fid_item["fid"]
+                
+                indicator_ids = get_indicator_ids(fid, dt=dt_format)
+                if indicator_ids:
+                    valid_fids.append({
+                        "name": fid_name,
+                        "fid": fid,
+                        "indicators": indicator_ids
+                    })
+            
+            if valid_fids:
+                valid_cids.append({
+                    "name": cid_name,
+                    "cid": cid,
+                    "has_fids": True,
+                    "valid_fids": valid_fids
+                })
+                print(f" ✓ ({len(valid_fids)} 个有效子目录)")
+            else:
+                print(f" ✗ (无可用指标)")
+        else:
+            indicator_ids = get_indicator_ids(cid, dt=dt_format)
+            if indicator_ids:
+                valid_cids.append({
+                    "name": cid_name,
+                    "cid": cid,
+                    "has_fids": False,
+                    "indicators": indicator_ids
+                })
+                print(f" ✓ ({len(indicator_ids)} 个指标)")
+            else:
+                print(f" ✗ (无可用指标)")
+    
+    return valid_cids
+
+
+def prescreen_all_directories(dt_format):
+    """
+    预筛选所有目录（先获取一级目录，再对每个一级目录预筛选二级目录）
+    显示整体进度百分比
+    
+    参数:
+        dt_format: 年份范围格式
+    
+    返回:
+        dict: 预筛选结果，格式为 {root_id: {"name": root_name, "valid_cids": [...]}}
+    """
+    print(f"\n{'='*60}")
+    print(f"  正在预筛选所有目录（可能需要一些时间）...")
+    print(f"{'='*60}")
+    print(f"  [优化] 预筛选延迟: {PRESCREEN_DELAY} 秒（比正式抓取更快）")
+    print(f"  [优化] 支持弹性延迟调整（请求失败时自动增加延迟）")
+    print(f"{'='*60}")
+    
+    root_ids = get_root_ids()
+    if not root_ids:
+        print("[错误] 无法获取一级目录，请检查网络连接")
+        return None
+    
+    total_roots = len(root_ids)
+    print(f"\n  共发现 {total_roots} 个一级目录，开始预筛选...\n")
+    
+    prescreen_result = {}
+    
+    for idx, root_item in enumerate(root_ids):
+        root_name = root_item["name"]
+        root_id = root_item["rootId"]
+        
+        overall_progress = (idx + 1) / total_roots * 100
+        print(f"\n{'─'*60}")
+        print(f"  [整体进度: {overall_progress:.1f}%] 正在处理一级目录: {root_name}")
+        print(f"{'─'*60}")
+        
+        cids = get_cids(root_id)
+        if not cids:
+            print(f"  [跳过] 该目录下没有二级目录")
+            continue
+        
+        print(f"  发现 {len(cids)} 个二级目录，开始检查...")
+        
+        valid_cids = filter_cids_with_indicators_with_progress(cids, dt_format, root_name)
+        
+        if valid_cids:
+            prescreen_result[root_id] = {
+                "name": root_name,
+                "rootId": root_id,
+                "valid_cids": valid_cids
+            }
+            print(f"  ✓ 筛选出 {len(valid_cids)} 个有可用指标的二级目录")
+        else:
+            print(f"  ✗ 该目录下没有可用指标")
+    
+    print(f"\n{'='*60}")
+    print(f"  预筛选完成！")
+    print(f"{'='*60}")
+    print(f"  有效一级目录数: {len(prescreen_result)}")
+    
+    total_valid_cids = sum(len(data["valid_cids"]) for data in prescreen_result.values())
+    print(f"  有效二级目录数: {total_valid_cids}")
+    print(f"{'='*60}")
+    
+    if not prescreen_result:
+        print("[错误] 没有找到任何有可用指标的目录")
+        return None
+    
+    return prescreen_result
+
+
 def generate_config_interactively(config_path="config.json"):
     """
-    交互式生成配置文件
+    交互式生成配置文件（优化版）
     
-    新流程（带预筛选）:
-    1. 选择一级目录（root_id）- 单选
-    2. 输入年份范围
-    3. 预筛选：只保留有指标的二级目录和三级目录
-    4. 选择二级目录（cid）- 多选（只显示有指标的）
-    5. 对每个选中的cid：
-       a. 如果有fid层级，选择fid（多选，只显示有指标的）
-       b. 选择指标（多选）
+    新流程（先预筛选，后交互式选择）:
+    1. 输入年份范围（预筛选需要）
+    2. 预筛选所有目录（显示进度百分比）
+       - 自动获取所有一级目录
+       - 对每个一级目录预筛选有指标的二级目录和三级目录
+       - 使用较短的延迟（0.8秒）加速预筛选
+    3. 选择一级目录（从预筛选结果中）
+    4. 选择二级目录（从预筛选结果中）
+    5. 选择指标（从预筛选结果中）
     6. 选择省份
     7. 配置其他选项
     8. 生成配置文件
+    
+    性能优化：
+    - 预筛选先完成，用户无需等待
+    - 预筛选使用较短延迟（0.8秒），正式抓取使用用户配置的延迟
+    - 支持弹性延迟调整（请求失败时自动增加）
+    - 显示进度百分比
     
     增强功能：
     - 遵守 robots.txt 协议
@@ -789,60 +970,64 @@ def generate_config_interactively(config_path="config.json"):
     - Session 连接复用
     """
     print(f"\n{'='*60}")
-    print(f"  国家统计局数据爬虫 - 交互式配置生成器 v3")
+    print(f"  国家统计局数据爬虫 - 交互式配置生成器 v3.1")
     print(f"{'='*60}")
-    print(f"  [增强功能] 已启用人类行为模拟")
-    print(f"  [增强功能] 遵守 robots.txt 协议")
+    print(f"  [增强] 已启用人类行为模拟")
+    print(f"  [增强] 遵守 robots.txt 协议")
+    print(f"  [优化] 先预筛选，后交互式选择")
+    print(f"  [优化] 预筛选延迟: {PRESCREEN_DELAY} 秒（更快）")
     print(f"{'='*60}")
     
-    client = get_api_client()
+    client = get_api_client(delay=PRESCREEN_DELAY)
     result = False
+    time_range_format = ""
+    dt_format = ""
     
     try:
         print(f"\n{'='*60}")
-        print(f"  步骤 1/8: 选择一级目录")
+        print(f"  步骤 1/8: 输入年份范围")
         print(f"{'='*60}")
+        print("  提示: 预筛选需要先知道年份范围")
         
-        root_ids = get_root_ids()
-        if not root_ids:
-            print("[错误] 无法获取一级目录，请检查网络连接")
+        dt_format, time_range_format = input_year_range()
+        print(f"\n已选择年份范围: {dt_format}")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 2/8: 预筛选所有目录（后台进行）")
+        print(f"{'='*60}")
+        print("  提示: 预筛选完成后再进行交互式选择")
+        
+        prescreen_result = prescreen_all_directories(dt_format)
+        
+        if not prescreen_result:
+            print("[错误] 预筛选失败，没有找到任何有效目录")
             return False
         
-        selected_root = select_from_list(root_ids, display_key="name", title="请选择一级目录")
+        print(f"\n{'='*60}")
+        print(f"  步骤 3/8: 选择一级目录")
+        print(f"{'='*60}")
+        
+        root_options = []
+        for root_id, data in prescreen_result.items():
+            root_options.append({
+                "name": data["name"],
+                "rootId": root_id,
+                "valid_cids": data["valid_cids"]
+            })
+        
+        print(f"\n  发现 {len(root_options)} 个有效一级目录（已有可用指标）")
+        
+        selected_root = select_from_list(root_options, display_key="name", title="请选择一级目录")
         if not selected_root:
             print("已退出")
             return False
         
         root_name = selected_root["name"]
         root_id = selected_root["rootId"]
+        valid_cids = selected_root.get("valid_cids", [])
         
         print(f"\n已选择: {root_name}")
-        
-        print(f"\n{'='*60}")
-        print(f"  步骤 2/8: 输入年份范围")
-        print(f"{'='*60}")
-        
-        dt_format, time_range_format = input_year_range()
-        print(f"\n已选择年份范围: {dt_format}")
-        
-        print(f"\n{'='*60}")
-        print(f"  步骤 3/8: 预筛选有指标的目录")
-        print(f"{'='*60}")
-        
-        cids = get_cids(root_id)
-        if not cids:
-            print("[错误] 无法获取二级目录")
-            return False
-        
-        print(f"\n  共发现 {len(cids)} 个二级目录")
-        
-        valid_cids = filter_cids_with_indicators(cids, dt_format)
-        
-        if not valid_cids:
-            print("[错误] 没有找到有可用指标的目录")
-            return False
-        
-        print(f"\n  筛选出 {len(valid_cids)} 个有可用指标的二级目录")
+        print(f"  该目录下有 {len(valid_cids)} 个有效二级目录")
         
         print(f"\n{'='*60}")
         print(f"  步骤 4/8: 选择二级目录（可多选）")
@@ -1006,7 +1191,7 @@ def generate_config_interactively(config_path="config.json"):
         print(f"  步骤 7/8: 配置其他选项")
         print(f"{'='*60}")
         
-        delay_input = input("\n请求间隔（秒，默认2）: ").strip()
+        delay_input = input("\n请求间隔（秒，默认2，用于正式数据抓取）: ").strip()
         delay = int(delay_input) if delay_input.isdigit() else 2
         
         default_output = "统计局数据.xlsx"
