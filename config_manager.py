@@ -261,26 +261,69 @@ def get_fids(cid):
     return fids
 
 
-def get_indicator_ids(fid):
+def get_indicator_ids(fid, df="2015-2025"):
     """
     获取第四级节点ID列表（indicatorIds）
     
-    访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync?pid={fid}&code=6
+    访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync
+    参数包含: pid={fid}, code=6, df={df}
     
     参数:
         fid: 第三级节点的fid
+        df: 年份范围，格式为 "yyyy-yyyy"，例如 "2015-2025"，默认为 "2015-2025"
     
     返回:
         list: 包含字典的列表，每个字典格式为:
-              {'name': '节点名称', 'indicatorId': '节点ID'}
+              {'name': '指标名称', 'indicatorId': '指标ID'}
     """
-    data = query_index_tree(pid=fid, code="6")
+    params = {
+        "pid": fid,
+        "code": "6",
+        "df": df
+    }
     
-    indicator_ids = []
-    for item in data:
-        indicator_ids.append({
-            "name": item.get("name", ""),
-            "indicatorId": item.get("_id", "")
-        })
+    try:
+        session = requests.Session()
+        session.headers.update(QUERY_HEADERS)
+        session.verify = False
+        
+        r = session.get(QUERY_INDEX_TREE_URL, params=params, timeout=30)
+        r.raise_for_status()
+        result = r.json()
+        
+        if not result.get("success") or result.get("state") != 20000:
+            print(f"[警告] API返回错误: {result.get('message', '未知错误')}")
+            return []
+        
+        data = result.get("data", {})
+        item_list = data.get("list", [])
+        
+        indicator_ids = []
+        for item in item_list:
+            indicator_ids.append({
+                "name": item.get("i_showname", ""),
+                "indicatorId": item.get("_id", "")
+            })
+        
+        return indicator_ids
     
-    return indicator_ids
+    except requests.exceptions.Timeout:
+        print("[错误] 请求超时")
+        return []
+    except requests.exceptions.ConnectionError:
+        print("[错误] 连接失败")
+        return []
+    except Exception as e:
+        print(f"[错误] {str(e)}")
+        return []
+
+if __name__ == "__main__":
+    root_ids = get_root_ids()
+    cids = get_cids(root_ids[0]["rootId"])
+    fids = get_fids(cids[0]["cid"])
+    indicator_ids = get_indicator_ids(fids[0]["fid"])
+
+    print(root_ids[0])
+    print(cids[0])
+    print(fids[0])
+    print(indicator_ids)
