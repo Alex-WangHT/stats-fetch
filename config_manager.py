@@ -943,94 +943,87 @@ def prescreen_all_directories(dt_format):
 
 def generate_config_interactively(config_path="config.json"):
     """
-    交互式生成配置文件（优化版）
+    交互式生成配置文件（简化版）
     
-    新流程（先预筛选，后交互式选择）:
-    1. 输入年份范围（预筛选需要）
-    2. 预筛选所有目录（显示进度百分比）
-       - 自动获取所有一级目录
-       - 对每个一级目录预筛选有指标的二级目录和三级目录
-       - 使用较短的延迟（0.8秒）加速预筛选
-    3. 选择一级目录（从预筛选结果中）
-    4. 选择二级目录（从预筛选结果中）
-    5. 选择指标（从预筛选结果中）
+    新流程：
+    1. 输入年份范围
+    2. 选择一级目录
+    3. 筛选该一级目录下有指标的二级目录（filter_cids_with_indicators）
+    4. 选择二级目录
+    5. 选择指标
     6. 选择省份
     7. 配置其他选项
     8. 生成配置文件
     
-    性能优化：
-    - 预筛选先完成，用户无需等待
-    - 预筛选使用较短延迟（0.8秒），正式抓取使用用户配置的延迟
-    - 支持弹性延迟调整（请求失败时自动增加）
-    - 显示进度百分比
-    
-    增强功能：
-    - 遵守 robots.txt 协议
-    - 人类行为模拟（随机延迟、User-Agent 轮换）
-    - Session 连接复用
+    简化说明：
+    - 不再预筛选所有一级目录，只筛选用户选择的那个
+    - 流程更简洁，等待时间更短
     """
     print(f"\n{'='*60}")
-    print(f"  国家统计局数据爬虫 - 交互式配置生成器 v3.1")
+    print(f"  国家统计局数据爬虫 - 交互式配置生成器 v4.0")
     print(f"{'='*60}")
     print(f"  [增强] 已启用人类行为模拟")
     print(f"  [增强] 遵守 robots.txt 协议")
-    print(f"  [优化] 先预筛选，后交互式选择")
-    print(f"  [优化] 预筛选延迟: {PRESCREEN_DELAY} 秒（更快）")
+    print(f"  [简化] 不再预筛选所有目录，按需筛选")
     print(f"{'='*60}")
     
     client = get_api_client(delay=PRESCREEN_DELAY)
     result = False
     time_range_format = ""
     dt_format = ""
+    config = None
     
     try:
         print(f"\n{'='*60}")
-        print(f"  步骤 1/8: 输入年份范围")
+        print(f"  步骤 1/7: 输入年份范围")
         print(f"{'='*60}")
-        print("  提示: 预筛选需要先知道年份范围")
         
         dt_format, time_range_format = input_year_range()
         print(f"\n已选择年份范围: {dt_format}")
         
         print(f"\n{'='*60}")
-        print(f"  步骤 2/8: 预筛选所有目录（后台进行）")
-        print(f"{'='*60}")
-        print("  提示: 预筛选完成后再进行交互式选择")
-        
-        prescreen_result = prescreen_all_directories(dt_format)
-        
-        if not prescreen_result:
-            print("[错误] 预筛选失败，没有找到任何有效目录")
-            return False
-        
-        print(f"\n{'='*60}")
-        print(f"  步骤 3/8: 选择一级目录")
+        print(f"  步骤 2/7: 选择一级目录")
         print(f"{'='*60}")
         
-        root_options = []
-        for root_id, data in prescreen_result.items():
-            root_options.append({
-                "name": data["name"],
-                "rootId": root_id,
-                "valid_cids": data["valid_cids"]
-            })
+        root_ids = get_root_ids()
+        if not root_ids:
+            print("[错误] 无法获取一级目录，请检查网络连接")
+            return False, None
         
-        print(f"\n  发现 {len(root_options)} 个有效一级目录（已有可用指标）")
+        print(f"\n  发现 {len(root_ids)} 个一级目录")
         
-        selected_root = select_from_list(root_options, display_key="name", title="请选择一级目录")
+        selected_root = select_from_list(root_ids, display_key="name", title="请选择一级目录")
         if not selected_root:
             print("已退出")
-            return False
+            return False, None
         
         root_name = selected_root["name"]
         root_id = selected_root["rootId"]
-        valid_cids = selected_root.get("valid_cids", [])
         
         print(f"\n已选择: {root_name}")
-        print(f"  该目录下有 {len(valid_cids)} 个有效二级目录")
         
         print(f"\n{'='*60}")
-        print(f"  步骤 4/8: 选择二级目录（可多选）")
+        print(f"  步骤 3/7: 筛选有指标的二级目录")
+        print(f"{'='*60}")
+        print("  提示: 正在检查该目录下哪些二级目录有可用指标...")
+        
+        cids = get_cids(root_id)
+        if not cids:
+            print(f"[错误] 该目录下没有二级目录")
+            return False, None
+        
+        print(f"  发现 {len(cids)} 个二级目录，开始筛选...")
+        
+        valid_cids = filter_cids_with_indicators_with_progress(cids, dt_format, root_name)
+        
+        if not valid_cids:
+            print(f"[错误] 该目录下没有找到有可用指标的二级目录")
+            return False, None
+        
+        print(f"\n  筛选出 {len(valid_cids)} 个有可用指标的二级目录")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 4/7: 选择二级目录（可多选）")
         print(f"{'='*60}")
         print("  提示: 只显示有可用指标的目录")
         
@@ -1043,7 +1036,7 @@ def generate_config_interactively(config_path="config.json"):
         )
         if not selected_cid_items:
             print("未选择任何二级目录，已退出")
-            return False
+            return False, None
         
         print(f"\n已选择 {len(selected_cid_items)} 个二级目录")
         
@@ -1057,7 +1050,7 @@ def generate_config_interactively(config_path="config.json"):
         indicators_config = {}
         
         print(f"\n{'='*60}")
-        print(f"  步骤 5/8: 为每个二级目录选择指标")
+        print(f"  步骤 5/7: 为每个二级目录选择指标")
         print(f"{'='*60}")
         
         for cid_item in selected_cids:
@@ -1148,10 +1141,10 @@ def generate_config_interactively(config_path="config.json"):
         
         if not indicators_config:
             print("[错误] 未选择任何指标，无法生成配置文件")
-            return False
+            return False, None
         
         print(f"\n{'='*60}")
-        print(f"  步骤 6/8: 选择省份")
+        print(f"  步骤 6/7: 选择省份")
         print(f"{'='*60}")
         print("  [1] 使用预设省份组")
         print("  [2] 自定义选择省份")
@@ -1171,7 +1164,7 @@ def generate_config_interactively(config_path="config.json"):
                     break
                 else:
                     print("已退出")
-                    return False
+                    return False, None
             elif choice == "2":
                 custom_provinces = select_custom_provinces()
                 if custom_provinces:
@@ -1180,15 +1173,15 @@ def generate_config_interactively(config_path="config.json"):
                     break
                 else:
                     print("已退出")
-                    return False
+                    return False, None
             elif choice == "0":
                 print("已退出")
-                return False
+                return False, None
             else:
                 print("请输入 1, 2 或 0")
         
         print(f"\n{'='*60}")
-        print(f"  步骤 7/8: 配置其他选项")
+        print(f"  步骤 7/7: 配置其他选项")
         print(f"{'='*60}")
         
         delay_input = input("\n请求间隔（秒，默认2，用于正式数据抓取）: ").strip()
@@ -1202,7 +1195,7 @@ def generate_config_interactively(config_path="config.json"):
             output += ".xlsx"
         
         print(f"\n{'='*60}")
-        print(f"  步骤 8/8: 生成配置文件")
+        print(f"  生成配置文件")
         print(f"{'='*60}")
         
         config = {
@@ -1225,15 +1218,16 @@ def generate_config_interactively(config_path="config.json"):
         print(f"  年份范围: {time_range_format}")
         print(f"  指标组数: {len(indicators_config)}")
         print(f"  输出文件: {output}")
-        print(f"\n  现在可以运行 python main.py 开始抓取数据")
         print(f"{'='*60}")
         
         result = True
-        return result
+        return result, config
     
     finally:
         close_api_client()
 
 
 if __name__ == "__main__":
-    generate_config_interactively()
+    result, config = generate_config_interactively()
+    if result and config:
+        print("\n配置已生成，可以开始抓取数据。")
