@@ -6,6 +6,19 @@
 
 import json
 import sys
+import requests
+
+requests.packages.urllib3.disable_warnings()
+
+QUERY_INDEX_TREE_URL = "https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync"
+
+QUERY_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Referer": "https://data.stats.gov.cn/dg/website/page.html",
+    "Origin": "https://data.stats.gov.cn",
+}
 
 PROVINCE_PRESETS = {
     "长江经济带": {
@@ -131,3 +144,143 @@ def load_config(config_path):
         "delay": raw.get("delay", 2),
         "output": raw.get("output", "统计局数据.xlsx"),
     }
+
+
+def query_index_tree(pid, code="6"):
+    """
+    访问指标树API的通用函数
+    
+    参数:
+        pid: 父级ID，首次访问时为空字符串
+        code: 指标类型代码，默认为6（年度数据）
+    
+    返回:
+        list: response['data'] 列表，每个元素包含 '_id', 'name' 等字段
+              若请求失败返回空列表
+    """
+    params = {
+        "pid": pid,
+        "code": code
+    }
+    
+    try:
+        session = requests.Session()
+        session.headers.update(QUERY_HEADERS)
+        session.verify = False
+        
+        r = session.get(QUERY_INDEX_TREE_URL, params=params, timeout=30)
+        r.raise_for_status()
+        result = r.json()
+        
+        if not result.get("success") or result.get("state") != 20000:
+            print(f"[警告] API返回错误: {result.get('message', '未知错误')}")
+            return []
+        
+        return result.get("data", [])
+    
+    except requests.exceptions.Timeout:
+        print("[错误] 请求超时")
+        return []
+    except requests.exceptions.ConnectionError:
+        print("[错误] 连接失败")
+        return []
+    except Exception as e:
+        print(f"[错误] {str(e)}")
+        return []
+
+
+def get_root_ids():
+    """
+    获取第一级节点ID列表（rootIds）
+    
+    访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync?pid=&code=6
+    
+    返回:
+        list: 包含字典的列表，每个字典格式为:
+              {'name': '节点名称', 'rootId': '节点ID'}
+    """
+    data = query_index_tree(pid="", code="6")
+    
+    root_ids = []
+    for item in data:
+        root_ids.append({
+            "name": item.get("name", ""),
+            "rootId": item.get("_id", "")
+        })
+    
+    return root_ids
+
+
+def get_cids(root_id):
+    """
+    获取第二级节点ID列表（cids）
+    
+    访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync?pid={rootId}&code=6
+    
+    参数:
+        root_id: 第一级节点的rootId
+    
+    返回:
+        list: 包含字典的列表，每个字典格式为:
+              {'name': '节点名称', 'cid': '节点ID'}
+    """
+    data = query_index_tree(pid=root_id, code="6")
+    
+    cids = []
+    for item in data:
+        cids.append({
+            "name": item.get("name", ""),
+            "cid": item.get("_id", "")
+        })
+    
+    return cids
+
+
+def get_fids(cid):
+    """
+    获取第三级节点ID列表（fids）
+    
+    访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync?pid={cid}&code=6
+    
+    参数:
+        cid: 第二级节点的cid
+    
+    返回:
+        list: 包含字典的列表，每个字典格式为:
+              {'name': '节点名称', 'fid': '节点ID'}
+    """
+    data = query_index_tree(pid=cid, code="6")
+    
+    fids = []
+    for item in data:
+        fids.append({
+            "name": item.get("name", ""),
+            "fid": item.get("_id", "")
+        })
+    
+    return fids
+
+
+def get_indicator_ids(fid):
+    """
+    获取第四级节点ID列表（indicatorIds）
+    
+    访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync?pid={fid}&code=6
+    
+    参数:
+        fid: 第三级节点的fid
+    
+    返回:
+        list: 包含字典的列表，每个字典格式为:
+              {'name': '节点名称', 'indicatorId': '节点ID'}
+    """
+    data = query_index_tree(pid=fid, code="6")
+    
+    indicator_ids = []
+    for item in data:
+        indicator_ids.append({
+            "name": item.get("name", ""),
+            "indicatorId": item.get("_id", "")
+        })
+    
+    return indicator_ids
