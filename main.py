@@ -56,21 +56,17 @@ def main():
             print(f"  将启动交互式配置生成器...")
             print(f"{'='*60}")
             
-            result, generated_config = generate_config_interactively(args.config)
+            result, _ = generate_config_interactively(args.config)
             
-            if not result or not generated_config:
+            if not result:
                 print("\n配置生成失败或已取消，程序退出。")
                 return
             
-            config = generated_config
             print(f"\n{'='*60}")
             print(f"  配置生成完成，即将开始数据抓取...")
             print(f"{'='*60}")
-    else:
-        print(f"\n{'='*60}")
-        print(f"  找到配置文件: {args.config}")
-        print(f"{'='*60}")
-        config = load_config(args.config)
+    
+    config = load_config(args.config)
     
     if not config:
         print("[错误] 无法加载配置")
