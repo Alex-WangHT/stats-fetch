@@ -525,29 +525,91 @@ def select_custom_provinces():
             print("请输入有效的数字，多个选择用逗号分隔")
 
 
+def filter_cids_with_indicators(cids, dt_format):
+    """
+    筛选有指标的二级目录
+    
+    参数:
+        cids: 二级目录列表
+        dt_format: 年份范围格式
+    
+    返回:
+        list: 有指标的二级目录列表，每个元素包含额外信息
+    """
+    valid_cids = []
+    
+    print(f"\n  正在检查各目录是否有可用指标（可能需要一些时间）...")
+    
+    for cid_item in cids:
+        cid_name = cid_item["name"]
+        cid = cid_item["cid"]
+        
+        print(f"  检查 [{cid_name}] ...", end="", flush=True)
+        
+        fids = get_fids(cid)
+        
+        if fids:
+            valid_fids = []
+            for fid_item in fids:
+                fid_name = fid_item["name"]
+                fid = fid_item["fid"]
+                
+                indicator_ids = get_indicator_ids(fid, dt=dt_format)
+                if indicator_ids:
+                    valid_fids.append({
+                        "name": fid_name,
+                        "fid": fid,
+                        "indicators": indicator_ids
+                    })
+            
+            if valid_fids:
+                valid_cids.append({
+                    "name": cid_name,
+                    "cid": cid,
+                    "has_fids": True,
+                    "valid_fids": valid_fids
+                })
+                print(f" ✓ ({len(valid_fids)} 个有效子目录)")
+            else:
+                print(f" ✗ (无可用指标)")
+        else:
+            indicator_ids = get_indicator_ids(cid, dt=dt_format)
+            if indicator_ids:
+                valid_cids.append({
+                    "name": cid_name,
+                    "cid": cid,
+                    "has_fids": False,
+                    "indicators": indicator_ids
+                })
+                print(f" ✓ ({len(indicator_ids)} 个指标)")
+            else:
+                print(f" ✗ (无可用指标)")
+    
+    return valid_cids
+
+
 def generate_config_interactively(config_path="config.json"):
     """
     交互式生成配置文件
     
-    新流程:
+    新流程（带预筛选）:
     1. 选择一级目录（root_id）- 单选
-    2. 选择二级目录（cid）- 多选
-    3. 输入年份范围
-    4. 对每个选中的cid：
-       a. 检查是否有fid层级
-       b. 选择fid（多选）
-       c. 对每个fid选择indicator_ids（多选）
-       或者直接选择indicator_ids（如果没有fid层级）
-    5. 选择省份
-    6. 配置其他选项
-    7. 生成配置文件
+    2. 输入年份范围
+    3. 预筛选：只保留有指标的二级目录和三级目录
+    4. 选择二级目录（cid）- 多选（只显示有指标的）
+    5. 对每个选中的cid：
+       a. 如果有fid层级，选择fid（多选，只显示有指标的）
+       b. 选择指标（多选）
+    6. 选择省份
+    7. 配置其他选项
+    8. 生成配置文件
     """
     print(f"\n{'='*60}")
-    print(f"  国家统计局数据爬虫 - 交互式配置生成器 v2")
+    print(f"  国家统计局数据爬虫 - 交互式配置生成器 v3")
     print(f"{'='*60}")
     
     print(f"\n{'='*60}")
-    print(f"  步骤 1/7: 选择一级目录")
+    print(f"  步骤 1/8: 选择一级目录")
     print(f"{'='*60}")
     
     root_ids = get_root_ids()
@@ -566,7 +628,14 @@ def generate_config_interactively(config_path="config.json"):
     print(f"\n已选择: {root_name}")
     
     print(f"\n{'='*60}")
-    print(f"  步骤 2/7: 选择二级目录（可多选）")
+    print(f"  步骤 2/8: 输入年份范围")
+    print(f"{'='*60}")
+    
+    dt_format, time_range_format = input_year_range()
+    print(f"\n已选择年份范围: {dt_format}")
+    
+    print(f"\n{'='*60}")
+    print(f"  步骤 3/8: 预筛选有指标的目录")
     print(f"{'='*60}")
     
     cids = get_cids(root_id)
@@ -574,61 +643,82 @@ def generate_config_interactively(config_path="config.json"):
         print("[错误] 无法获取二级目录")
         return False
     
-    selected_cids = select_multiple_from_list(
-        cids, 
+    print(f"\n  共发现 {len(cids)} 个二级目录")
+    
+    valid_cids = filter_cids_with_indicators(cids, dt_format)
+    
+    if not valid_cids:
+        print("[错误] 没有找到有可用指标的目录")
+        return False
+    
+    print(f"\n  筛选出 {len(valid_cids)} 个有可用指标的二级目录")
+    
+    print(f"\n{'='*60}")
+    print(f"  步骤 4/8: 选择二级目录（可多选）")
+    print(f"{'='*60}")
+    print("  提示: 只显示有可用指标的目录")
+    
+    cid_options = [{"name": item["name"], "cid": item["cid"]} for item in valid_cids]
+    
+    selected_cid_items = select_multiple_from_list(
+        cid_options, 
         display_key="name", 
         title="请选择二级目录（可多选，如 1,3,5）"
     )
-    if not selected_cids:
+    if not selected_cid_items:
         print("未选择任何二级目录，已退出")
         return False
     
-    print(f"\n已选择 {len(selected_cids)} 个二级目录")
+    print(f"\n已选择 {len(selected_cid_items)} 个二级目录")
     
-    print(f"\n{'='*60}")
-    print(f"  步骤 3/7: 输入年份范围")
-    print(f"{'='*60}")
-    
-    dt_format, time_range_format = input_year_range()
-    print(f"\n已选择年份范围: {dt_format}")
+    selected_cids = []
+    for selected_item in selected_cid_items:
+        for valid_item in valid_cids:
+            if valid_item["cid"] == selected_item["cid"]:
+                selected_cids.append(valid_item)
+                break
     
     indicators_config = {}
     
     print(f"\n{'='*60}")
-    print(f"  步骤 4/7: 为每个二级目录选择指标")
+    print(f"  步骤 5/8: 为每个二级目录选择指标")
     print(f"{'='*60}")
     
     for cid_item in selected_cids:
         cid_name = cid_item["name"]
         cid = cid_item["cid"]
+        has_fids = cid_item["has_fids"]
         
         print(f"\n{'-'*60}")
         print(f"  处理二级目录: {cid_name}")
         print(f"{'-'*60}")
         
-        print(f"\n  正在检查是否有三级目录（fid）...")
-        fids = get_fids(cid)
-        
-        if fids:
-            print(f"  发现 {len(fids)} 个三级目录")
+        if has_fids:
+            valid_fids = cid_item["valid_fids"]
+            print(f"\n  发现 {len(valid_fids)} 个有指标的三级目录")
             
-            selected_fids = select_multiple_from_list(
-                fids, 
+            fid_options = [{"name": item["name"], "fid": item["fid"]} for item in valid_fids]
+            
+            selected_fid_items = select_multiple_from_list(
+                fid_options, 
                 display_key="name", 
                 title=f"请为 [{cid_name}] 选择三级目录（可多选）"
             )
-            if not selected_fids:
+            if not selected_fid_items:
                 print(f"  跳过 [{cid_name}]")
                 continue
             
-            print(f"\n  已选择 {len(selected_fids)} 个三级目录")
+            print(f"\n  已选择 {len(selected_fid_items)} 个三级目录")
             
-            for fid_item in selected_fids:
-                fid_name = fid_item["name"]
-                fid = fid_item["fid"]
+            for selected_fid_item in selected_fid_items:
+                fid_name = selected_fid_item["name"]
+                fid = selected_fid_item["fid"]
                 
-                print(f"\n  正在获取 [{fid_name}] 的指标列表...")
-                indicator_ids = get_indicator_ids(fid, dt=dt_format)
+                indicator_ids = None
+                for valid_fid in valid_fids:
+                    if valid_fid["fid"] == fid:
+                        indicator_ids = valid_fid["indicators"]
+                        break
                 
                 if not indicator_ids:
                     print(f"  [警告] 未获取到 [{fid_name}] 的指标列表")
@@ -656,13 +746,8 @@ def generate_config_interactively(config_path="config.json"):
                     "fid": fid
                 }
         else:
-            print(f"  该目录没有三级目录，直接获取指标列表...")
-            
-            indicator_ids = get_indicator_ids(cid, dt=dt_format)
-            
-            if not indicator_ids:
-                print(f"  [警告] 未获取到 [{cid_name}] 的指标列表")
-                continue
+            indicator_ids = cid_item["indicators"]
+            print(f"\n  该目录有 {len(indicator_ids)} 个指标")
             
             selected_indicators = select_multiple_from_list(
                 indicator_ids, 
@@ -690,7 +775,7 @@ def generate_config_interactively(config_path="config.json"):
         return False
     
     print(f"\n{'='*60}")
-    print(f"  步骤 5/7: 选择省份")
+    print(f"  步骤 6/8: 选择省份")
     print(f"{'='*60}")
     print("  [1] 使用预设省份组")
     print("  [2] 自定义选择省份")
@@ -727,7 +812,7 @@ def generate_config_interactively(config_path="config.json"):
             print("请输入 1, 2 或 0")
     
     print(f"\n{'='*60}")
-    print(f"  步骤 6/7: 配置其他选项")
+    print(f"  步骤 7/8: 配置其他选项")
     print(f"{'='*60}")
     
     delay_input = input("\n请求间隔（秒，默认2）: ").strip()
@@ -741,7 +826,7 @@ def generate_config_interactively(config_path="config.json"):
         output += ".xlsx"
     
     print(f"\n{'='*60}")
-    print(f"  步骤 7/7: 生成配置文件")
+    print(f"  步骤 8/8: 生成配置文件")
     print(f"{'='*60}")
     
     config = {
