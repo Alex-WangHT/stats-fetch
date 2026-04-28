@@ -319,19 +319,404 @@ def get_indicator_ids(cid, dt="2015-2025", name=""):
         print(f"[错误] {str(e)}")
         return []
 
-if __name__ == "__main__":
-    root_ids = get_root_ids()
-    cids = get_cids(root_ids[0]["rootId"])
-    fids = get_fids(cids[0]["cid"])
-    indicator_ids = get_indicator_ids(fids[0]["fid"])
+def select_from_list(items, display_key="name", title="请选择"):
+    """
+    从列表中交互式选择一个项
+    
+    参数:
+        items: 包含字典的列表
+        display_key: 显示用的键名
+        title: 选择提示标题
+    
+    返回:
+        dict: 用户选择的字典项，或None（退出）
+    """
+    if not items:
+        print("[错误] 列表为空")
+        return None
+    
+    print(f"\n{'='*60}")
+    print(f"  {title}")
+    print(f"{'='*60}")
+    
+    for i, item in enumerate(items, 1):
+        name = item.get(display_key, "未知")
+        print(f"  [{i}] {name}")
+    
+    print(f"  [0] 退出/返回上一级")
+    print(f"{'='*60}")
+    
+    while True:
+        try:
+            choice = input("\n请输入数字选择: ").strip()
+            if choice == "0":
+                return None
+            idx = int(choice) - 1
+            if 0 <= idx < len(items):
+                return items[idx]
+            else:
+                print(f"请输入 0-{len(items)} 之间的数字")
+        except ValueError:
+            print("请输入有效的数字")
 
-    print("一级根目录：")
-    print(root_ids)
-    print("二级目录：")
-    print(cids)
-    print("三级目录：")
-    print(fids)
-    print("指标分类：")
-    print(fids)
-    print("指标目录：")
-    print(indicator_ids)
+
+def select_multiple_from_list(items, display_key="name", title="请选择（可多选，用逗号分隔，如 1,3,5）"):
+    """
+    从列表中交互式选择多个项
+    
+    参数:
+        items: 包含字典的列表
+        display_key: 显示用的键名
+        title: 选择提示标题
+    
+    返回:
+        list: 用户选择的字典项列表，或空列表（退出）
+    """
+    if not items:
+        print("[错误] 列表为空")
+        return []
+    
+    print(f"\n{'='*60}")
+    print(f"  {title}")
+    print(f"{'='*60}")
+    
+    for i, item in enumerate(items, 1):
+        name = item.get(display_key, "未知")
+        print(f"  [{i}] {name}")
+    
+    print(f"  [0] 全选")
+    print(f"  [输入 q] 退出/返回上一级")
+    print(f"{'='*60}")
+    
+    while True:
+        choice = input("\n请输入数字选择: ").strip().lower()
+        if choice == "q":
+            return []
+        if choice == "0":
+            return items
+        
+        try:
+            indices = [int(x.strip()) - 1 for x in choice.split(",")]
+            selected = []
+            for idx in indices:
+                if 0 <= idx < len(items):
+                    selected.append(items[idx])
+                else:
+                    print(f"警告: 索引 {idx+1} 超出范围，已跳过")
+            if selected:
+                return selected
+            else:
+                print("未选择任何有效项")
+        except ValueError:
+            print("请输入有效的数字，多个选择用逗号分隔")
+
+
+def input_year_range():
+    """
+    交互式输入年份范围
+    
+    返回:
+        tuple: (dt格式, time_range格式)
+               例如: ("2015-2025", "2015YY-2025YY")
+    """
+    print(f"\n{'='*60}")
+    print(f"  请输入年份范围")
+    print(f"{'='*60}")
+    print("格式示例: 2015-2025")
+    print("直接回车使用默认值: 2015-2025")
+    
+    while True:
+        user_input = input("\n请输入年份范围: ").strip()
+        if not user_input:
+            user_input = "2015-2025"
+        
+        if "-" in user_input:
+            parts = user_input.split("-")
+            if len(parts) == 2:
+                try:
+                    start = int(parts[0].strip())
+                    end = int(parts[1].strip())
+                    if start <= end and 1949 <= start <= 2050 and 1949 <= end <= 2050:
+                        dt_format = f"{start}-{end}"
+                        time_range_format = f"{start}YY-{end}YY"
+                        return dt_format, time_range_format
+                except ValueError:
+                    pass
+        print("格式错误，请重新输入，例如: 2015-2025")
+
+
+def select_province_preset():
+    """
+    交互式选择省份预设
+    
+    返回:
+        tuple: (preset_name, provinces_dict) 或 (None, None)
+    """
+    print(f"\n{'='*60}")
+    print(f"  请选择省份预设")
+    print(f"{'='*60}")
+    
+    presets = list(PROVINCE_PRESETS.keys())
+    
+    for i, name in enumerate(presets, 1):
+        count = len(PROVINCE_PRESETS[name])
+        print(f"  [{i}] {name} ({count}个省份)")
+    
+    print(f"  [0] 退出")
+    print(f"{'='*60}")
+    
+    while True:
+        try:
+            choice = input("\n请输入数字选择: ").strip()
+            if choice == "0":
+                return None, None
+            idx = int(choice) - 1
+            if 0 <= idx < len(presets):
+                preset_name = presets[idx]
+                return preset_name, PROVINCE_PRESETS[preset_name]
+            else:
+                print(f"请输入 0-{len(presets)} 之间的数字")
+        except ValueError:
+            print("请输入有效的数字")
+
+
+def select_custom_provinces():
+    """
+    交互式从全部省份中选择多个省份
+    
+    返回:
+        dict: 选择的省份字典 {code: name}
+    """
+    all_provinces = PROVINCE_PRESETS["全部省份"]
+    province_list = [{"code": code, "name": name} for code, name in all_provinces.items()]
+    
+    print(f"\n{'='*60}")
+    print(f"  请从全部省份中选择（可多选）")
+    print(f"{'='*60}")
+    
+    for i, item in enumerate(province_list, 1):
+        print(f"  [{i}] {item['name']}")
+    
+    print(f"  [0] 全选")
+    print(f"  [输入 q] 退出/返回上一级")
+    print(f"{'='*60}")
+    
+    while True:
+        choice = input("\n请输入数字选择: ").strip().lower()
+        if choice == "q":
+            return {}
+        if choice == "0":
+            return all_provinces
+        
+        try:
+            indices = [int(x.strip()) - 1 for x in choice.split(",")]
+            selected = {}
+            for idx in indices:
+                if 0 <= idx < len(province_list):
+                    item = province_list[idx]
+                    selected[item["code"]] = item["name"]
+                else:
+                    print(f"警告: 索引 {idx+1} 超出范围，已跳过")
+            if selected:
+                return selected
+            else:
+                print("未选择任何有效项")
+        except ValueError:
+            print("请输入有效的数字，多个选择用逗号分隔")
+
+
+def generate_config_interactively(config_path="config.json"):
+    """
+    交互式生成配置文件
+    
+    流程:
+    1. 选择一级目录（root_id）
+    2. 选择二级目录（cid）
+    3. 选择三级目录（fid）- 可选，根据实际结构
+    4. 选择指标（indicatorIds）
+    5. 输入年份范围
+    6. 选择省份
+    7. 生成配置文件
+    """
+    print(f"\n{'='*60}")
+    print(f"  国家统计局数据爬虫 - 交互式配置生成器")
+    print(f"{'='*60}")
+    
+    indicators_config = {}
+    
+    while True:
+        print(f"\n{'='*60}")
+        print(f"  步骤 1/6: 选择一级目录")
+        print(f"{'='*60}")
+        
+        root_ids = get_root_ids()
+        if not root_ids:
+            print("[错误] 无法获取一级目录，请检查网络连接")
+            return False
+        
+        selected_root = select_from_list(root_ids, display_key="name", title="请选择一级目录")
+        if not selected_root:
+            print("已退出")
+            return False
+        
+        root_name = selected_root["name"]
+        root_id = selected_root["rootId"]
+        
+        print(f"\n已选择: {root_name}")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 2/6: 选择二级目录")
+        print(f"{'='*60}")
+        
+        cids = get_cids(root_id)
+        if not cids:
+            print("[错误] 无法获取二级目录")
+            continue
+        
+        selected_cid = select_from_list(cids, display_key="name", title="请选择二级目录")
+        if not selected_cid:
+            continue
+        
+        cid_name = selected_cid["name"]
+        cid = selected_cid["cid"]
+        
+        print(f"\n已选择: {cid_name}")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 3/6: 输入年份范围")
+        print(f"{'='*60}")
+        
+        dt_format, time_range_format = input_year_range()
+        print(f"\n已选择年份范围: {dt_format}")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 4/6: 选择指标")
+        print(f"{'='*60}")
+        
+        indicator_ids = get_indicator_ids(cid, dt=dt_format)
+        if not indicator_ids:
+            print("[警告] 未获取到指标列表，请检查")
+        
+        selected_indicators = select_multiple_from_list(
+            indicator_ids, 
+            display_key="name", 
+            title="请选择指标（可多选）"
+        )
+        if not selected_indicators:
+            print("未选择任何指标，返回上一级")
+            continue
+        
+        indicator_name = cid_name
+        indicator_id_list = [item["indicatorId"] for item in selected_indicators]
+        
+        print(f"\n已选择 {len(indicator_id_list)} 个指标")
+        
+        indicators_config[indicator_name] = {
+            "cid": cid,
+            "indicatorIds": indicator_id_list,
+            "rootId": root_id
+        }
+        
+        print(f"\n{'='*60}")
+        print(f"  是否继续添加更多指标组？")
+        print(f"{'='*60}")
+        print("  [1] 继续添加")
+        print("  [2] 进入下一步")
+        print("  [0] 退出")
+        
+        while True:
+            choice = input("\n请选择: ").strip()
+            if choice == "1":
+                break
+            elif choice == "2":
+                break
+            elif choice == "0":
+                print("已退出")
+                return False
+            else:
+                print("请输入 1, 2 或 0")
+        
+        if choice == "1":
+            continue
+        
+        break
+    
+    print(f"\n{'='*60}")
+    print(f"  步骤 5/6: 选择省份")
+    print(f"{'='*60}")
+    print("  [1] 使用预设省份组")
+    print("  [2] 自定义选择省份")
+    print("  [0] 退出")
+    
+    province_preset = ""
+    custom_provinces = {}
+    
+    while True:
+        choice = input("\n请选择: ").strip()
+        if choice == "1":
+            preset_name, provinces = select_province_preset()
+            if preset_name:
+                province_preset = preset_name
+                custom_provinces = {}
+                print(f"\n已选择省份预设: {preset_name}")
+                break
+            else:
+                print("已退出")
+                return False
+        elif choice == "2":
+            custom_provinces = select_custom_provinces()
+            if custom_provinces:
+                province_preset = ""
+                print(f"\n已选择 {len(custom_provinces)} 个省份")
+                break
+            else:
+                print("已退出")
+                return False
+        elif choice == "0":
+            print("已退出")
+            return False
+        else:
+            print("请输入 1, 2 或 0")
+    
+    print(f"\n{'='*60}")
+    print(f"  步骤 6/6: 配置其他选项")
+    print(f"{'='*60}")
+    
+    delay_input = input("\n请求间隔（秒，默认2）: ").strip()
+    delay = int(delay_input) if delay_input.isdigit() else 2
+    
+    default_output = "统计局数据.xlsx"
+    output = input(f"输出文件名（默认: {default_output}）: ").strip()
+    if not output:
+        output = default_output
+    if not output.endswith(".xlsx"):
+        output += ".xlsx"
+    
+    config = {
+        "province_preset": province_preset,
+        "custom_provinces": custom_provinces,
+        "time_range": time_range_format,
+        "delay": delay,
+        "output": output,
+        "indicators": indicators_config,
+    }
+    
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=4)
+    
+    print(f"\n{'='*60}")
+    print(f"  配置生成完成！")
+    print(f"{'='*60}")
+    print(f"  配置文件: {config_path}")
+    print(f"  省份预设: {province_preset if province_preset else '自定义'}")
+    print(f"  年份范围: {time_range_format}")
+    print(f"  指标组数: {len(indicators_config)}")
+    print(f"  输出文件: {output}")
+    print(f"\n  现在可以运行 python main.py 开始抓取数据")
+    print(f"{'='*60}")
+    
+    return True
+
+
+if __name__ == "__main__":
+    generate_config_interactively()
