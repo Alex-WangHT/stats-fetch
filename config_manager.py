@@ -11,6 +11,7 @@ import requests
 requests.packages.urllib3.disable_warnings()
 
 QUERY_INDEX_TREE_URL = "https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync"
+QUERY_INDICATORS_BY_CID_URL = "https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndicatorsByCid"
 
 QUERY_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
@@ -261,25 +262,26 @@ def get_fids(cid):
     return fids
 
 
-def get_indicator_ids(fid, df="2015-2025"):
+def get_indicator_ids(cid, dt="2015-2025", name=""):
     """
     获取第四级节点ID列表（indicatorIds）
     
-    访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync
-    参数包含: pid={fid}, code=6, df={df}
+    访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndicatorsByCid
+    参数包含: cid={cid}, dt={dt}, name={name}
     
     参数:
-        fid: 第三级节点的fid
-        df: 年份范围，格式为 "yyyy-yyyy"，例如 "2015-2025"，默认为 "2015-2025"
+        cid: 第二级节点的cid（指标分类ID）
+        dt: 年份范围，格式为 "yyyy-yyyy"，例如 "2015-2025"，默认为 "2015-2025"
+        name: 指标名称搜索关键词，默认为空字符串
     
     返回:
         list: 包含字典的列表，每个字典格式为:
               {'name': '指标名称', 'indicatorId': '指标ID'}
     """
     params = {
-        "pid": fid,
-        "code": "6",
-        "df": df
+        "cid": cid,
+        "dt": dt,
+        "name": name
     }
     
     try:
@@ -287,7 +289,7 @@ def get_indicator_ids(fid, df="2015-2025"):
         session.headers.update(QUERY_HEADERS)
         session.verify = False
         
-        r = session.get(QUERY_INDEX_TREE_URL, params=params, timeout=30)
+        r = session.get(QUERY_INDICATORS_BY_CID_URL, params=params, timeout=30)
         r.raise_for_status()
         result = r.json()
         
@@ -323,7 +325,13 @@ if __name__ == "__main__":
     fids = get_fids(cids[0]["cid"])
     indicator_ids = get_indicator_ids(fids[0]["fid"])
 
-    print(root_ids[0])
-    print(cids[0])
-    print(fids[0])
+    print("一级根目录：")
+    print(root_ids)
+    print("二级目录：")
+    print(cids)
+    print("三级目录：")
+    print(fids)
+    print("指标分类：")
+    print(fids)
+    print("指标目录：")
     print(indicator_ids)
