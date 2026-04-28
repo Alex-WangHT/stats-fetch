@@ -2,24 +2,46 @@
 """
 配置管理模块
 负责生成配置文件和加载配置
+
+增强功能：
+- 遵守 robots.txt 协议
+- 人类行为模拟（随机延迟、User-Agent 轮换、Session 复用）
+- 避免反爬虫检测
 """
 
 import json
 import sys
+import time
+import random
 import requests
+from urllib.parse import urlparse
 
 requests.packages.urllib3.disable_warnings()
 
 QUERY_INDEX_TREE_URL = "https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndexTreeAsync"
 QUERY_INDICATORS_BY_CID_URL = "https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndicatorsByCid"
 
-QUERY_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+BASE_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://data.stats.gov.cn/dg/website/page.html",
     "Origin": "https://data.stats.gov.cn",
+    "Connection": "keep-alive",
 }
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+]
+
+DEFAULT_DELAY = 2.0
+DEFAULT_HUMAN_LIKE = True
+
+_api_client_instance = None
 
 PROVINCE_PRESETS = {
     "长江经济带": {
@@ -95,6 +117,228 @@ PROVINCE_PRESETS = {
 }
 
 
+class ConfigApiClient:
+    """
+    配置生成阶段的 API 客户端
+    包含人类行为模拟：随机延迟、User-Agent 轮换、Session 复用
+    遵守 robots.txt 协议
+    """
+
+    def __init__(self, delay=DEFAULT_DELAY, human_like=DEFAULT_HUMAN_LIKE):
+        self.delay = delay
+        self.human_like = human_like
+        self.session = requests.Session()
+        self._last_request_time = 0
+        self._robots_txt_checked = False
+        self._robots_allowed = True
+        
+        self._init_session()
+
+    def _init_session(self):
+        """初始化会话，模拟人类浏览器环境"""
+        if self.human_like:
+            user_agent = random.choice(USER_AGENTS)
+            headers = {**BASE_HEADERS, "User-Agent": user_agent}
+        else:
+            headers = {
+                **BASE_HEADERS,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+            }
+        
+        self.session.headers.update(headers)
+        self.session.verify = False
+
+    def _check_robots_txt(self):
+        """
+        检查目标网站的 robots.txt
+        如果网站没有 robots.txt 或允许访问，则返回 True
+        """
+        if self._robots_txt_checked:
+            return self._robots_allowed
+        
+        self._robots_txt_checked = True
+        
+        try:
+            parsed = urlparse(QUERY_INDEX_TREE_URL)
+            robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+            
+            r = self.session.get(robots_url, timeout=10)
+            
+            if r.status_code == 404:
+                print("[提示] 目标网站未设置 robots.txt（允许访问）")
+                self._robots_allowed = True
+            elif r.status_code == 200:
+                content = r.text.lower()
+                if "disallow: /" in content and "user-agent: *" in content:
+                    print("[警告] robots.txt 禁止所有爬虫访问")
+                    self._robots_allowed = False
+                else:
+                    print("[提示] 已检查 robots.txt，允许访问")
+                    self._robots_allowed = True
+            else:
+                self._robots_allowed = True
+                
+        except Exception as e:
+            print(f"[提示] 无法获取 robots.txt（{str(e)}），继续执行")
+            self._robots_allowed = True
+        
+        return self._robots_allowed
+
+    def _random_delay(self):
+        """模拟人类的随机延迟"""
+        current_time = time.time()
+        elapsed = current_time - self._last_request_time
+        
+        if self.human_like:
+            base_delay = self.delay
+            jitter = random.uniform(-0.5, 1.0)
+            actual_delay = max(0.5, base_delay + jitter)
+            
+            remaining = actual_delay - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+        else:
+            remaining = self.delay - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+        
+        self._last_request_time = time.time()
+
+    def _rotate_user_agent(self):
+        """随机轮换 User-Agent"""
+        if self.human_like and random.random() < 0.3:
+            new_ua = random.choice(USER_AGENTS)
+            self.session.headers.update({"User-Agent": new_ua})
+
+    def query_index_tree(self, pid, code="6"):
+        """
+        访问指标树API的通用函数
+        
+        参数:
+            pid: 父级ID，首次访问时为空字符串
+            code: 指标类型代码，默认为6（年度数据）
+        
+        返回:
+            list: response['data'] 列表，每个元素包含 '_id', 'name' 等字段
+                  若请求失败返回空列表
+        """
+        if not self._check_robots_txt():
+            print("[错误] 被 robots.txt 禁止访问")
+            return []
+        
+        self._random_delay()
+        self._rotate_user_agent()
+        
+        params = {
+            "pid": pid,
+            "code": code
+        }
+        
+        try:
+            r = self.session.get(QUERY_INDEX_TREE_URL, params=params, timeout=30)
+            r.raise_for_status()
+            result = r.json()
+            
+            if not result.get("success") or result.get("state") != 20000:
+                print(f"[警告] API返回错误: {result.get('message', '未知错误')}")
+                return []
+            
+            return result.get("data", [])
+        
+        except requests.exceptions.Timeout:
+            print("[错误] 请求超时")
+            return []
+        except requests.exceptions.ConnectionError:
+            print("[错误] 连接失败")
+            return []
+        except Exception as e:
+            print(f"[错误] {str(e)}")
+            return []
+
+    def get_indicator_ids(self, cid, dt="2015-2025", name=""):
+        """
+        获取第四级节点ID列表（indicatorIds）
+        
+        访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndicatorsByCid
+        参数包含: cid={cid}, dt={dt}, name={name}
+        
+        参数:
+            cid: 第二级节点的cid（指标分类ID）
+            dt: 年份范围，格式为 "yyyy-yyyy"，例如 "2015-2025"，默认为 "2015-2025"
+            name: 指标名称搜索关键词，默认为空字符串
+        
+        返回:
+            list: 包含字典的列表，每个字典格式为:
+                  {'name': '指标名称', 'indicatorId': '指标ID'}
+        """
+        if not self._check_robots_txt():
+            print("[错误] 被 robots.txt 禁止访问")
+            return []
+        
+        self._random_delay()
+        self._rotate_user_agent()
+        
+        params = {
+            "cid": cid,
+            "dt": dt,
+            "name": name
+        }
+        
+        try:
+            r = self.session.get(QUERY_INDICATORS_BY_CID_URL, params=params, timeout=30)
+            r.raise_for_status()
+            result = r.json()
+            
+            if not result.get("success") or result.get("state") != 20000:
+                print(f"[警告] API返回错误: {result.get('message', '未知错误')}")
+                return []
+            
+            data = result.get("data", {})
+            item_list = data.get("list", [])
+            
+            indicator_ids = []
+            for item in item_list:
+                indicator_ids.append({
+                    "name": item.get("i_showname", ""),
+                    "indicatorId": item.get("_id", "")
+                })
+            
+            return indicator_ids
+        
+        except requests.exceptions.Timeout:
+            print("[错误] 请求超时")
+            return []
+        except requests.exceptions.ConnectionError:
+            print("[错误] 连接失败")
+            return []
+        except Exception as e:
+            print(f"[错误] {str(e)}")
+            return []
+
+    def close(self):
+        """关闭会话"""
+        self.session.close()
+
+
+def get_api_client(delay=DEFAULT_DELAY, human_like=DEFAULT_HUMAN_LIKE):
+    """
+    获取全局 API 客户端实例（单例模式）
+    确保整个配置生成过程使用同一个 Session，保持连接复用
+    """
+    global _api_client_instance
+    if _api_client_instance is None:
+        _api_client_instance = ConfigApiClient(delay=delay, human_like=human_like)
+    return _api_client_instance
+
+
+def close_api_client():
+    """关闭全局 API 客户端"""
+    global _api_client_instance
+    if _api_client_instance is not None:
+        _api_client_instance.close()
+        _api_client_instance = None
+
+
 def generate_default_config(config_path="config.json"):
     config = {
         "province_preset": "长江经济带",
@@ -149,7 +393,7 @@ def load_config(config_path):
 
 def query_index_tree(pid, code="6"):
     """
-    访问指标树API的通用函数
+    访问指标树API的通用函数（使用全局 API 客户端）
     
     参数:
         pid: 父级ID，首次访问时为空字符串
@@ -159,35 +403,8 @@ def query_index_tree(pid, code="6"):
         list: response['data'] 列表，每个元素包含 '_id', 'name' 等字段
               若请求失败返回空列表
     """
-    params = {
-        "pid": pid,
-        "code": code
-    }
-    
-    try:
-        session = requests.Session()
-        session.headers.update(QUERY_HEADERS)
-        session.verify = False
-        
-        r = session.get(QUERY_INDEX_TREE_URL, params=params, timeout=30)
-        r.raise_for_status()
-        result = r.json()
-        
-        if not result.get("success") or result.get("state") != 20000:
-            print(f"[警告] API返回错误: {result.get('message', '未知错误')}")
-            return []
-        
-        return result.get("data", [])
-    
-    except requests.exceptions.Timeout:
-        print("[错误] 请求超时")
-        return []
-    except requests.exceptions.ConnectionError:
-        print("[错误] 连接失败")
-        return []
-    except Exception as e:
-        print(f"[错误] {str(e)}")
-        return []
+    client = get_api_client()
+    return client.query_index_tree(pid, code)
 
 
 def get_root_ids():
@@ -264,7 +481,7 @@ def get_fids(cid):
 
 def get_indicator_ids(cid, dt="2015-2025", name=""):
     """
-    获取第四级节点ID列表（indicatorIds）
+    获取第四级节点ID列表（indicatorIds）（使用全局 API 客户端）
     
     访问: https://data.stats.gov.cn/dg/website/publicrelease/web/external/new/queryIndicatorsByCid
     参数包含: cid={cid}, dt={dt}, name={name}
@@ -278,46 +495,8 @@ def get_indicator_ids(cid, dt="2015-2025", name=""):
         list: 包含字典的列表，每个字典格式为:
               {'name': '指标名称', 'indicatorId': '指标ID'}
     """
-    params = {
-        "cid": cid,
-        "dt": dt,
-        "name": name
-    }
-    
-    try:
-        session = requests.Session()
-        session.headers.update(QUERY_HEADERS)
-        session.verify = False
-        
-        r = session.get(QUERY_INDICATORS_BY_CID_URL, params=params, timeout=30)
-        r.raise_for_status()
-        result = r.json()
-        
-        if not result.get("success") or result.get("state") != 20000:
-            print(f"[警告] API返回错误: {result.get('message', '未知错误')}")
-            return []
-        
-        data = result.get("data", {})
-        item_list = data.get("list", [])
-        
-        indicator_ids = []
-        for item in item_list:
-            indicator_ids.append({
-                "name": item.get("i_showname", ""),
-                "indicatorId": item.get("_id", "")
-            })
-        
-        return indicator_ids
-    
-    except requests.exceptions.Timeout:
-        print("[错误] 请求超时")
-        return []
-    except requests.exceptions.ConnectionError:
-        print("[错误] 连接失败")
-        return []
-    except Exception as e:
-        print(f"[错误] {str(e)}")
-        return []
+    client = get_api_client()
+    return client.get_indicator_ids(cid, dt, name)
 
 def select_from_list(items, display_key="name", title="请选择"):
     """
@@ -603,138 +782,175 @@ def generate_config_interactively(config_path="config.json"):
     6. 选择省份
     7. 配置其他选项
     8. 生成配置文件
+    
+    增强功能：
+    - 遵守 robots.txt 协议
+    - 人类行为模拟（随机延迟、User-Agent 轮换）
+    - Session 连接复用
     """
     print(f"\n{'='*60}")
     print(f"  国家统计局数据爬虫 - 交互式配置生成器 v3")
     print(f"{'='*60}")
-    
-    print(f"\n{'='*60}")
-    print(f"  步骤 1/8: 选择一级目录")
+    print(f"  [增强功能] 已启用人类行为模拟")
+    print(f"  [增强功能] 遵守 robots.txt 协议")
     print(f"{'='*60}")
     
-    root_ids = get_root_ids()
-    if not root_ids:
-        print("[错误] 无法获取一级目录，请检查网络连接")
-        return False
+    client = get_api_client()
+    result = False
     
-    selected_root = select_from_list(root_ids, display_key="name", title="请选择一级目录")
-    if not selected_root:
-        print("已退出")
-        return False
-    
-    root_name = selected_root["name"]
-    root_id = selected_root["rootId"]
-    
-    print(f"\n已选择: {root_name}")
-    
-    print(f"\n{'='*60}")
-    print(f"  步骤 2/8: 输入年份范围")
-    print(f"{'='*60}")
-    
-    dt_format, time_range_format = input_year_range()
-    print(f"\n已选择年份范围: {dt_format}")
-    
-    print(f"\n{'='*60}")
-    print(f"  步骤 3/8: 预筛选有指标的目录")
-    print(f"{'='*60}")
-    
-    cids = get_cids(root_id)
-    if not cids:
-        print("[错误] 无法获取二级目录")
-        return False
-    
-    print(f"\n  共发现 {len(cids)} 个二级目录")
-    
-    valid_cids = filter_cids_with_indicators(cids, dt_format)
-    
-    if not valid_cids:
-        print("[错误] 没有找到有可用指标的目录")
-        return False
-    
-    print(f"\n  筛选出 {len(valid_cids)} 个有可用指标的二级目录")
-    
-    print(f"\n{'='*60}")
-    print(f"  步骤 4/8: 选择二级目录（可多选）")
-    print(f"{'='*60}")
-    print("  提示: 只显示有可用指标的目录")
-    
-    cid_options = [{"name": item["name"], "cid": item["cid"]} for item in valid_cids]
-    
-    selected_cid_items = select_multiple_from_list(
-        cid_options, 
-        display_key="name", 
-        title="请选择二级目录（可多选，如 1,3,5）"
-    )
-    if not selected_cid_items:
-        print("未选择任何二级目录，已退出")
-        return False
-    
-    print(f"\n已选择 {len(selected_cid_items)} 个二级目录")
-    
-    selected_cids = []
-    for selected_item in selected_cid_items:
-        for valid_item in valid_cids:
-            if valid_item["cid"] == selected_item["cid"]:
-                selected_cids.append(valid_item)
-                break
-    
-    indicators_config = {}
-    
-    print(f"\n{'='*60}")
-    print(f"  步骤 5/8: 为每个二级目录选择指标")
-    print(f"{'='*60}")
-    
-    for cid_item in selected_cids:
-        cid_name = cid_item["name"]
-        cid = cid_item["cid"]
-        has_fids = cid_item["has_fids"]
+    try:
+        print(f"\n{'='*60}")
+        print(f"  步骤 1/8: 选择一级目录")
+        print(f"{'='*60}")
         
-        print(f"\n{'-'*60}")
-        print(f"  处理二级目录: {cid_name}")
-        print(f"{'-'*60}")
+        root_ids = get_root_ids()
+        if not root_ids:
+            print("[错误] 无法获取一级目录，请检查网络连接")
+            return False
         
-        if has_fids:
-            valid_fids = cid_item["valid_fids"]
-            print(f"\n  发现 {len(valid_fids)} 个有指标的三级目录")
+        selected_root = select_from_list(root_ids, display_key="name", title="请选择一级目录")
+        if not selected_root:
+            print("已退出")
+            return False
+        
+        root_name = selected_root["name"]
+        root_id = selected_root["rootId"]
+        
+        print(f"\n已选择: {root_name}")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 2/8: 输入年份范围")
+        print(f"{'='*60}")
+        
+        dt_format, time_range_format = input_year_range()
+        print(f"\n已选择年份范围: {dt_format}")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 3/8: 预筛选有指标的目录")
+        print(f"{'='*60}")
+        
+        cids = get_cids(root_id)
+        if not cids:
+            print("[错误] 无法获取二级目录")
+            return False
+        
+        print(f"\n  共发现 {len(cids)} 个二级目录")
+        
+        valid_cids = filter_cids_with_indicators(cids, dt_format)
+        
+        if not valid_cids:
+            print("[错误] 没有找到有可用指标的目录")
+            return False
+        
+        print(f"\n  筛选出 {len(valid_cids)} 个有可用指标的二级目录")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 4/8: 选择二级目录（可多选）")
+        print(f"{'='*60}")
+        print("  提示: 只显示有可用指标的目录")
+        
+        cid_options = [{"name": item["name"], "cid": item["cid"]} for item in valid_cids]
+        
+        selected_cid_items = select_multiple_from_list(
+            cid_options, 
+            display_key="name", 
+            title="请选择二级目录（可多选，如 1,3,5）"
+        )
+        if not selected_cid_items:
+            print("未选择任何二级目录，已退出")
+            return False
+        
+        print(f"\n已选择 {len(selected_cid_items)} 个二级目录")
+        
+        selected_cids = []
+        for selected_item in selected_cid_items:
+            for valid_item in valid_cids:
+                if valid_item["cid"] == selected_item["cid"]:
+                    selected_cids.append(valid_item)
+                    break
+        
+        indicators_config = {}
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 5/8: 为每个二级目录选择指标")
+        print(f"{'='*60}")
+        
+        for cid_item in selected_cids:
+            cid_name = cid_item["name"]
+            cid = cid_item["cid"]
+            has_fids = cid_item["has_fids"]
             
-            fid_options = [{"name": item["name"], "fid": item["fid"]} for item in valid_fids]
+            print(f"\n{'-'*60}")
+            print(f"  处理二级目录: {cid_name}")
+            print(f"{'-'*60}")
             
-            selected_fid_items = select_multiple_from_list(
-                fid_options, 
-                display_key="name", 
-                title=f"请为 [{cid_name}] 选择三级目录（可多选）"
-            )
-            if not selected_fid_items:
-                print(f"  跳过 [{cid_name}]")
-                continue
-            
-            print(f"\n  已选择 {len(selected_fid_items)} 个三级目录")
-            
-            for selected_fid_item in selected_fid_items:
-                fid_name = selected_fid_item["name"]
-                fid = selected_fid_item["fid"]
+            if has_fids:
+                valid_fids = cid_item["valid_fids"]
+                print(f"\n  发现 {len(valid_fids)} 个有指标的三级目录")
                 
-                indicator_ids = None
-                for valid_fid in valid_fids:
-                    if valid_fid["fid"] == fid:
-                        indicator_ids = valid_fid["indicators"]
-                        break
+                fid_options = [{"name": item["name"], "fid": item["fid"]} for item in valid_fids]
                 
-                if not indicator_ids:
-                    print(f"  [警告] 未获取到 [{fid_name}] 的指标列表")
+                selected_fid_items = select_multiple_from_list(
+                    fid_options, 
+                    display_key="name", 
+                    title=f"请为 [{cid_name}] 选择三级目录（可多选）"
+                )
+                if not selected_fid_items:
+                    print(f"  跳过 [{cid_name}]")
                     continue
+                
+                print(f"\n  已选择 {len(selected_fid_items)} 个三级目录")
+                
+                for selected_fid_item in selected_fid_items:
+                    fid_name = selected_fid_item["name"]
+                    fid = selected_fid_item["fid"]
+                    
+                    indicator_ids = None
+                    for valid_fid in valid_fids:
+                        if valid_fid["fid"] == fid:
+                            indicator_ids = valid_fid["indicators"]
+                            break
+                    
+                    if not indicator_ids:
+                        print(f"  [警告] 未获取到 [{fid_name}] 的指标列表")
+                        continue
+                    
+                    selected_indicators = select_multiple_from_list(
+                        indicator_ids, 
+                        display_key="name", 
+                        title=f"请为 [{fid_name}] 选择指标（可多选）"
+                    )
+                    
+                    if not selected_indicators:
+                        print(f"  跳过 [{fid_name}]")
+                        continue
+                    
+                    indicator_name = f"{cid_name} - {fid_name}"
+                    indicator_id_list = [item["indicatorId"] for item in selected_indicators]
+                    
+                    print(f"\n  已选择 {len(indicator_id_list)} 个指标")
+                    
+                    indicators_config[indicator_name] = {
+                        "cid": cid,
+                        "indicatorIds": indicator_id_list,
+                        "rootId": root_id,
+                        "fid": fid
+                    }
+            else:
+                indicator_ids = cid_item["indicators"]
+                print(f"\n  该目录有 {len(indicator_ids)} 个指标")
                 
                 selected_indicators = select_multiple_from_list(
                     indicator_ids, 
                     display_key="name", 
-                    title=f"请为 [{fid_name}] 选择指标（可多选）"
+                    title=f"请为 [{cid_name}] 选择指标（可多选）"
                 )
                 
                 if not selected_indicators:
-                    print(f"  跳过 [{fid_name}]")
+                    print(f"  跳过 [{cid_name}]")
                     continue
                 
-                indicator_name = f"{cid_name} - {fid_name}"
+                indicator_name = cid_name
                 indicator_id_list = [item["indicatorId"] for item in selected_indicators]
                 
                 print(f"\n  已选择 {len(indicator_id_list)} 个指标")
@@ -742,117 +958,96 @@ def generate_config_interactively(config_path="config.json"):
                 indicators_config[indicator_name] = {
                     "cid": cid,
                     "indicatorIds": indicator_id_list,
-                    "rootId": root_id,
-                    "fid": fid
+                    "rootId": root_id
                 }
-        else:
-            indicator_ids = cid_item["indicators"]
-            print(f"\n  该目录有 {len(indicator_ids)} 个指标")
-            
-            selected_indicators = select_multiple_from_list(
-                indicator_ids, 
-                display_key="name", 
-                title=f"请为 [{cid_name}] 选择指标（可多选）"
-            )
-            
-            if not selected_indicators:
-                print(f"  跳过 [{cid_name}]")
-                continue
-            
-            indicator_name = cid_name
-            indicator_id_list = [item["indicatorId"] for item in selected_indicators]
-            
-            print(f"\n  已选择 {len(indicator_id_list)} 个指标")
-            
-            indicators_config[indicator_name] = {
-                "cid": cid,
-                "indicatorIds": indicator_id_list,
-                "rootId": root_id
-            }
-    
-    if not indicators_config:
-        print("[错误] 未选择任何指标，无法生成配置文件")
-        return False
-    
-    print(f"\n{'='*60}")
-    print(f"  步骤 6/8: 选择省份")
-    print(f"{'='*60}")
-    print("  [1] 使用预设省份组")
-    print("  [2] 自定义选择省份")
-    print("  [0] 退出")
-    
-    province_preset = ""
-    custom_provinces = {}
-    
-    while True:
-        choice = input("\n请选择: ").strip()
-        if choice == "1":
-            preset_name, provinces = select_province_preset()
-            if preset_name:
-                province_preset = preset_name
-                custom_provinces = {}
-                print(f"\n已选择省份预设: {preset_name}")
-                break
-            else:
-                print("已退出")
-                return False
-        elif choice == "2":
-            custom_provinces = select_custom_provinces()
-            if custom_provinces:
-                province_preset = ""
-                print(f"\n已选择 {len(custom_provinces)} 个省份")
-                break
-            else:
-                print("已退出")
-                return False
-        elif choice == "0":
-            print("已退出")
+        
+        if not indicators_config:
+            print("[错误] 未选择任何指标，无法生成配置文件")
             return False
-        else:
-            print("请输入 1, 2 或 0")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 6/8: 选择省份")
+        print(f"{'='*60}")
+        print("  [1] 使用预设省份组")
+        print("  [2] 自定义选择省份")
+        print("  [0] 退出")
+        
+        province_preset = ""
+        custom_provinces = {}
+        
+        while True:
+            choice = input("\n请选择: ").strip()
+            if choice == "1":
+                preset_name, provinces = select_province_preset()
+                if preset_name:
+                    province_preset = preset_name
+                    custom_provinces = {}
+                    print(f"\n已选择省份预设: {preset_name}")
+                    break
+                else:
+                    print("已退出")
+                    return False
+            elif choice == "2":
+                custom_provinces = select_custom_provinces()
+                if custom_provinces:
+                    province_preset = ""
+                    print(f"\n已选择 {len(custom_provinces)} 个省份")
+                    break
+                else:
+                    print("已退出")
+                    return False
+            elif choice == "0":
+                print("已退出")
+                return False
+            else:
+                print("请输入 1, 2 或 0")
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 7/8: 配置其他选项")
+        print(f"{'='*60}")
+        
+        delay_input = input("\n请求间隔（秒，默认2）: ").strip()
+        delay = int(delay_input) if delay_input.isdigit() else 2
+        
+        default_output = "统计局数据.xlsx"
+        output = input(f"输出文件名（默认: {default_output}）: ").strip()
+        if not output:
+            output = default_output
+        if not output.endswith(".xlsx"):
+            output += ".xlsx"
+        
+        print(f"\n{'='*60}")
+        print(f"  步骤 8/8: 生成配置文件")
+        print(f"{'='*60}")
+        
+        config = {
+            "province_preset": province_preset,
+            "custom_provinces": custom_provinces,
+            "time_range": time_range_format,
+            "delay": delay,
+            "output": output,
+            "indicators": indicators_config,
+        }
+        
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
+        
+        print(f"\n{'='*60}")
+        print(f"  配置生成完成！")
+        print(f"{'='*60}")
+        print(f"  配置文件: {config_path}")
+        print(f"  省份预设: {province_preset if province_preset else '自定义'}")
+        print(f"  年份范围: {time_range_format}")
+        print(f"  指标组数: {len(indicators_config)}")
+        print(f"  输出文件: {output}")
+        print(f"\n  现在可以运行 python main.py 开始抓取数据")
+        print(f"{'='*60}")
+        
+        result = True
+        return result
     
-    print(f"\n{'='*60}")
-    print(f"  步骤 7/8: 配置其他选项")
-    print(f"{'='*60}")
-    
-    delay_input = input("\n请求间隔（秒，默认2）: ").strip()
-    delay = int(delay_input) if delay_input.isdigit() else 2
-    
-    default_output = "统计局数据.xlsx"
-    output = input(f"输出文件名（默认: {default_output}）: ").strip()
-    if not output:
-        output = default_output
-    if not output.endswith(".xlsx"):
-        output += ".xlsx"
-    
-    print(f"\n{'='*60}")
-    print(f"  步骤 8/8: 生成配置文件")
-    print(f"{'='*60}")
-    
-    config = {
-        "province_preset": province_preset,
-        "custom_provinces": custom_provinces,
-        "time_range": time_range_format,
-        "delay": delay,
-        "output": output,
-        "indicators": indicators_config,
-    }
-    
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=4)
-    
-    print(f"\n{'='*60}")
-    print(f"  配置生成完成！")
-    print(f"{'='*60}")
-    print(f"  配置文件: {config_path}")
-    print(f"  省份预设: {province_preset if province_preset else '自定义'}")
-    print(f"  年份范围: {time_range_format}")
-    print(f"  指标组数: {len(indicators_config)}")
-    print(f"  输出文件: {output}")
-    print(f"\n  现在可以运行 python main.py 开始抓取数据")
-    print(f"{'='*60}")
-    
-    return True
+    finally:
+        close_api_client()
 
 
 if __name__ == "__main__":
